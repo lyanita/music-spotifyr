@@ -1,0 +1,478 @@
+#1. Install and load packages
+install.packages("librarian") #https://github.com/DesiQuintans/librarian
+librarian::lib_startup(librarian, lib = "C:/Users/xxxxx/Documents/R/win-library/3.5", global = TRUE)
+
+#shelf() attaches packages to the search path, first by installing them the loading into the library
+librarian::shelf(
+  readxl,
+  plyr,
+  dplyr,
+  tibble,
+  stringr,
+  reshape2,
+  data.table,
+  ggplot2,
+  Rserve,
+  tidyr,
+  tidyverse,
+  spotifyr,
+  httr,
+  rvest,
+  tidytext,
+  wordcloud,
+  ggridges,
+  wesanderson,
+  yarrr,
+  knitr,
+  kableExtra,
+  radarchart,
+  textdata,
+  pacman,
+  plotly,
+  rsconnect,
+  geniusr,
+  purrr,
+  ggthemes,
+  viridis,
+  ggsci,
+  ghibli,
+  nord,
+  palettetown,
+  EmilHvitfeldt / quickpalette,
+  shinydashboard,
+  lib = "C:/Users/xxxxx/Documents/R/win-library/3.5"
+)
+
+#2. Set up your Spotify credentials in the system environment variables
+spotify_id <- 'ENTER CLIENT ID'
+spotify_secret <- 'ENTER CLIENT SECRET'
+Sys.setenv(SPOTIFY_CLIENT_ID = spotify_id)
+Sys.setenv(SPOTIFY_CLIENT_SECRET = spotify_secret)
+spotify_token <- get_spotify_access_token()
+
+#3. Pull data from Spotify https://github.com/charlie86/spotifyr
+spotify_data <-
+  get_artist_audio_features('the weeknd') #Get audio feature info for all or part of an artists' discography
+spotify_data <-
+  spotify_data %>% filter(
+    album_name == "Trilogy" |
+      album_name == "Kiss Land" |
+      album_name == "Beauty Behind The Madness" |
+      album_name == "Starboy" |
+      album_name == "My Dear Melancholy," | album_name == "After Hours"
+  ) #Filter spotify_data to the indicated albums only, | means "or"
+
+#4. Pull data from Genius
+genius_token <-
+  'ENTER GENIUS TOKEN'
+
+genius_get_artists <- function(artist_name, n_results = 10) {
+  baseURL <- 'https://api.genius.com/search?q='
+  requestURL <- paste0(
+    baseURL,
+    gsub(' ', '%20', artist_name),
+    '&per_page=',
+    n_results,
+    '&access_token=',
+    genius_token
+  ) 
+#paste0() concatenate vectors after converting to character
+  
+  res <- GET(requestURL) %>% content %>% .$response %>% .$hits #Retrieve URL content (specifically hits section of response section)
+  
+  map_df(1:length(res), function (x) {
+    tmp <- res[[x]]$result$primary_artist
+    list(artist_id = tmp$id,
+         artist_name = tmp$name)
+  }) %>% unique
+} 
+#map_df() transform the input by applying a function to each element and returning a vector the same length as the input, in this case there are 10 lists i.e. length = 10
+#list() create a list with two columns 
+#unique() removes any duplicates
+
+genius_artists <- genius_get_artists('the weeknd')
+
+#5. Get track URLs
+baseURL <- 'https://api.genius.com/artists/'
+requestURL <- paste0(baseURL, genius_artists$artist_id[1], '/songs')
+
+track_lyric_urls <- list()
+i <- 1
+while (i > 0) {
+  tmp <-
+    GET(requestURL,
+        query = list(
+          access_token = genius_token,
+          per_page = 50,
+          page = i
+        )) %>% content %>% .$response #set search parameters using query with a list
+  track_lyric_urls <- c(track_lyric_urls, tmp$songs)
+  if (!is.null(tmp$next_page)) {
+    i <- tmp$next_page
+  } else {
+    break
+  }
+}
+
+#Filter to get URLs only for tracker on which The Weeknd is the primary artist
+filtered_track_lyric_urls <- c()
+filtered_track_lyric_titles <- c()
+index <- c()
+
+for (i in 1:length(track_lyric_urls)) {
+  if (track_lyric_urls[[i]]$primary_artist$name == "The Weeknd") {
+    filtered_track_lyric_urls <-
+      append(filtered_track_lyric_urls, track_lyric_urls[[i]]$url) #append() add elements to a vector
+    filtered_track_lyric_titles <-
+      append(filtered_track_lyric_titles, track_lyric_urls[[i]]$title)
+    
+    index <- append(index, i)
+  }
+}
+
+#Create dataframe where titles can be found in track name
+df_lyrics <-
+  data.frame(filtered_track_lyric_urls, filtered_track_lyric_titles) 
+df_lyrics <-
+  df_lyrics[filtered_track_lyric_titles %in% spotify_data$track_name,]
+
+df_lyrics$filtered_track_lyric_urls <-
+  as.character(df_lyrics$filtered_track_lyric_urls) #as.character() convert to character type
+df_lyrics$filtered_track_lyric_titles <-
+  as.character(df_lyrics$filtered_track_lyric_titles)
+
+#6. Webscrape lyrics
+df_lyrics_length = length(df_lyrics$filtered_track_lyric_urls)
+lyric_text <- rep(NA, df_lyrics_length) #replicate() repeats the values x # of times
+for (i in 1:df_lyrics_length) {
+  lyric_text[i] <-
+    read_html(df_lyrics$filtered_track_lyric_urls[i]) %>% #read_html() read the html content
+    html_nodes(".lyrics p") %>% #html_nodes() extracts specific pieces out of html documents i.e. selects all <p> elements with "lyrics" class attribute #http://flukeout.github.io/#
+    html_text() #html_text() extracts attributes, text and tag name from html
+}
+
+#7. Clean and standardize lyrics
+lyric_text_length <- length(lyric_text)
+for (i in 1:lyric_text_length) {
+  lyric_text[i] <- gsub("([a-z])([A-Z])", "\\1 \\2", lyric_text[i])
+  lyric_text[i] <- gsub("\n", " ", lyric_text[i])
+  lyric_text[i] <- gsub("\\[.*?\\]", " ", lyric_text[i]) #converts anything within [] and including the brackets into spaces
+  lyric_text[i] <- tolower(lyric_text[i])
+  lyric_text[i] <- gsub("[ [:punct:] ]", " ", lyric_text[i]) #converts all punctuations into spaces
+  lyric_text[i] <- gsub(" {2,}", " ", lyric_text[i])
+}
+
+genius_data <-
+  data.frame(track_name = df_lyrics$filtered_track_lyric_titles,
+             lyrics = lyric_text)
+genius_data$track_name <- as.character(genius_data$track_name)
+genius_data$lyrics <- as.character(genius_data$lyrics)
+
+#8. Remove tracks (if applicable)
+spotify_data <- spotify_data[!(spotify_data$track_name == " "), ] #enter track name if to be removed
+
+#9. Join Spotify and Genius data
+spotify_genius <-
+  full_join(genius_data, spotify_data, by = "track_name") 
+
+ordered_albums <- factor(spotify_genius$album_name) #factor() encode a vector as a factor
+ordered_albums <-
+  factor(ordered_albums, levels(ordered_albums)[c(6, 3, 2, 5, 4, 1)]) #order the levels (# represents the order the original factors come by, placement represents the new order)
+spotify_genius$ordered_albums <- ordered_albums
+
+spotify_genius <- dplyr::filter(spotify_genius, grepl("US", available_markets))
+
+options("digits" = 3) #contol the number of significant digits to print when printing numeric values
+
+#10. Valence ridge plot
+spotify_genius %>% ggplot(aes(x = valence, y = ordered_albums, fill = ..x..)) + #use a continuous fill
+  geom_density_ridges_gradient(scale = 0.9) + #plot ridgelines and ridgeline plots with fill gradients along the x axis
+  scale_fill_gradient(low = "white", high = "maroon3") + #create a two colour gradient (low-high)
+  theme_fivethirtyeight() + #set font theme
+  theme(panel.background = element_rect(fill = "white")) + #set background of plotting area, element_rect corresponds to borders and backgrounds
+  theme(plot.background = element_rect(fill = "white")) + #set background of the entire plot
+  xlim(0, 1) + #set the x axis limit
+  theme(legend.position = "none") #set position of the legend if applicable
+
+#11. Album by mean valence table
+spotify_genius %>%
+  group_by(album_name) %>%
+  summarise(mean(valence)) %>%
+  arrange(desc('mean(valence)')) %>%
+  kable() %>%
+  kable_styling("striped", full_width = F, position = "left") %>%
+  row_spec(row = 1:6,
+           background = "#fffce4",
+           color = "red")
+
+#12. Top 5 songs by valence table
+spotify_genius %>%
+  select(track_name, album_name, valence) %>%
+  top_n(5) %>% #select the top entires in group
+  arrange(-valence) %>% #reorder dataframe by valence
+  kable() %>% #generate a basic table
+  kable_styling("striped", full_width = F, position = "left") %>% #striped bootstrapped table (not 100% width), positioned left on a page
+  row_spec(row = 1:5,
+           background = "azure",
+           color = "deeppink") #select rows and specify its look
+
+#13. Sonic score graph
+pirateplot( #create an RDI (raw data, descriptive and inferential statistic) plot showing the relationship between 1-3 categorical independent variables and 1 continuous depend variable
+  valence + danceability + energy ~ album_release_year, #y var = valance + danceability + energy, x var = year
+  spotify_genius,
+  pal = c(wes_palettes$GrandBudapest2, wes_palettes$Moonrise3[1:2]), #set the color palette of the plot using palettes from Wes Anderson movies https://github.com/karthik/wesanderson
+  xlab = "album",
+  ylab = "sonic score",
+  theme = 0, #theme = 0 turns off opacities
+  point.o = 0.7, #set the opaqueness of the points
+  avg.line.o = 1, #set the opaqueness of the average line
+  jitter.val = .05, #amount of jitter added to points horizontally
+  bty = "n",
+  cex.axis = 0.6, #set the size of the axis
+  xaxt = "n",
+  main = "Sonic Score Graph of The Weeknd's Albums"
+)
+axis(1, cex.axis = 0.6, lwd = 0) #add an axis to the current plot, side = 1 means below, line width = 0 suppresses the line
+legend(
+  "topright",
+  c(
+    "1: Trilogy",
+    "2: Kiss Land",
+    "3: Beauty Behind The Madness",
+    "4: Starboy",
+    "5: Dear My Melancholy,",
+    "6: After Hours"
+  ),
+  bty = "n", #specific the type of box to be drawn around the boxplot (only o and n are allowed)
+  cex = 0.6 #character expansion factor relative to current par("cex"); used for text
+)
+
+#14. Word cloud
+spotify_genius_edit <-
+  spotify_genius %>% unnest_tokens(word, lyrics) #split a column into tokens (one-token-per-row); this pull apart the lyrics column into seperate rows for every word 
+spotify_genius_words <-
+  spotify_genius_edit %>% anti_join( #return all rows from dataframe where they are not matching values
+    rbind( 
+      stop_words[1], #combine vector with a dataframe of stop words (commonly used words)
+      "yeah",
+      "don",
+      "ooh",
+      "ll",
+      "hey",
+      "ain",
+      "ve",
+      "wanna",
+      "na",
+      "gon",
+      "oo",
+      "ma",
+      "woah",
+      "bout",
+      "ohh",
+      "em",
+      "woo",
+      "les",
+      "til",
+      "uh",
+      "gotta",
+      "i'm",
+      "ooo",
+      "lo",
+      "ah",
+      "ahh"
+    )
+  )
+spotify_genius_words$album_release_year <-
+  as.character(spotify_genius_words$album_release_year)
+spotify_genius_words$album_release_year <-
+  as.numeric(substr(spotify_genius_words$album_release_year, 1, 4))
+spotify_genius_edit$album_release_year <-
+  as.character(spotify_genius_edit$album_release_year)
+spotify_genius_edit$album_release_year <-
+  as.numeric(substr(spotify_genius_edit$album_release_year, 1, 4))
+word_count <- spotify_genius_words %>%
+  count(word, sort = TRUE) %>% #create dataframe with label and frequency
+  mutate(word = reorder(word, n)) %>% #sort based on frequency
+  ungroup() #drop any group bys
+
+wordcloud( #plot a word cloud
+  words = word_count$word,
+  freq = word_count$n,
+  max.words = 100, #max number of words to be plotted, least frequent terms dropped
+  random.order = FALSE, #random.order = F means plot words in decreasing frequency
+  colors = c(wes_palettes$Moonrise3[c(1:2, 5)], wes_palettes$Royal2[5])
+)
+
+#15. Lexical diversity plot
+lexical_diversity <-
+  spotify_genius_edit %>% group_by(track_name, album_release_year) %>%
+  mutate(lex_div = length(unique(word)) / length(word)) %>% #add a new column called lex_div, counts the # of unique vs total words
+  select(track_name, lex_div, album_release_year) %>% #select only these 3 columns from original dataframe
+  distinct() #retain only unique/distinct rows from input table
+
+pirateplot(
+  lex_div ~ album_release_year,
+  lexical_diversity,
+  pal = c(
+    "cyan3",
+    "darkgoldenrod1",
+    "maroon4",
+    "red3",
+    "#b39db2",
+    "black"
+  ),
+  xlab = "album",
+  ylab = "lexical diversity",
+  theme = 0,
+  point.o = 0.5,
+  avg.line.o = 1,
+  jitter.val = .05,
+  bty = "n",
+  cex.axis = 0.6,
+  xaxt = "n",
+  main = "Lexical Diversity Plot of The Weeknd's Albums"
+)
+axis(1, cex.axis = 0.6, lwd = 0)
+legend(
+  "topright",
+  c(
+    "1: Trilogy",
+    "2: Kiss Land",
+    "3: Beauty Behind The Madness",
+    "4: Starboy",
+    "5: Dear My Melancholy,",
+    "6: After Hours"
+  ),
+  bty = "n",
+  cex = 0.6
+)
+
+#16. Sentiment lexicons
+spotify_genius_sub <- spotify_genius_words %>%
+  inner_join(get_sentiments("nrc")) %>% #get specific sentiment lexicons in a tidy format, with one row per word
+  filter(!sentiment %in% c("positive", "negative"))
+
+spotify_genius_afinn <- spotify_genius_words %>%
+  inner_join(get_sentiments("afinn"))
+spotify_genius_afinn <- rename(spotify_genius_afinn, "score" = "value")
+
+spotify_genius_bing <- spotify_genius_words %>%
+  inner_join(get_sentiments("bing"))
+
+get_sentiments("afinn")
+
+dim <- spotify_genius_afinn %>%
+  count(album_name)
+spotify_genius_afinn %>%
+  group_by(ordered_albums) %>%
+  summarise(sum(score)) %>% #create one row in the output for each group in the group_by clause
+  mutate(scaled = `sum(score)` * 229 / dim$n) %>% #add a new variable called 'scaled'
+  ggplot(aes(x = ordered_albums, y = scaled, fill = ordered_albums)) +
+  geom_bar(stat = "identity") + #geom_bar makes the height of the bar proportional to the number of cases in each group
+  ylim(-300, 300) +
+  coord_flip() + #flip cartesian coordinates so that horizontal becomes vertical (and vice versa)
+  theme_fivethirtyeight() +
+  theme(panel.background = element_rect(fill = "white")) +
+  theme(plot.background = element_rect(fill = "white")) +
+  scale_fill_manual(
+    values = c(
+      "palevioletred",
+      "violetred3",
+      "greenyellow",
+      "lightpink",
+      "olivedrab3",
+      "mediumseagreen"
+    )
+  ) +
+  theme(legend.position = "none")
+
+
+
+#17 Album radar chart
+sentiment_sub <- spotify_genius_sub %>%
+  group_by(ordered_albums, sentiment) %>%
+  count(ordered_albums, sentiment) %>%
+  select(ordered_albums, sentiment, sentiment_total = n) #select the columns to keep and renaming n to 'sentiment_total'
+
+album_sub <- spotify_genius_sub %>%
+  count(ordered_albums) %>%
+  select(ordered_albums, album_total = n)
+
+radar_chart <- sentiment_sub %>%
+  inner_join(album_sub, by = "ordered_albums") %>%
+  mutate(percent = round((sentiment_total / album_total * 100), 3)) %>% #create a new column called 'percent'
+  select(-sentiment_total,-album_total) %>% #deselect 'sentiment_total' and 'album_total' columns
+  spread(ordered_albums, percent) #pivots the data so that 'ordered_albums' becomes the column names and 'percent' becomes the values
+
+chartJSRadar(
+  radar_chart, #dataframe of scores for each axis
+  polyAlpha = 0.1, #alpha value for the fill of polygons
+  lineAlpha = 0.8, #alpha value for the outlines
+  maxScale = 30, #max value on each axis
+  main = "Radar Chart of The Weeknd's Album Sentiment",
+  colMatrix = matrix( #numeric matrix of RGB color values
+    c(0, 255, 255, 255, 185, 15, 139, 0, 139, 255, 0, 0, 201, 167, 198, 0, 0, 0),
+    byrow = F,
+    nrow = 3
+  )
+)
+
+#18. Danceability density plot
+dance_density <- ggplot(spotify_genius,
+       aes(
+         x = danceability,
+         fill = album_name,
+         text = paste(album_name)
+       )) +
+  geom_density(alpha = 0.7, color = NA) + #computes and draws kernel density estimate, smoothed version of the histogram
+  scale_fill_manual(values = c(
+    '#1ed760',
+    '#e73247',
+    '#ff6f59',
+    '#17bebb',
+    "olivedrab3",
+    "violetred3"
+  )) +
+  labs(x = "danceability", y = "density") +
+  guides(fill = guide_legend(title = "Album")) +
+  theme_minimal() +
+  ggtitle("Distribution of Danceability Data")
+
+ggplotly(dance_density, tooltip = c("text")) #conversts ggplot to plotly object
+
+#19. Danceability dumbbell plot
+spotify_genius_dance <- spotify_genius %>% group_by(album_name) %>%
+  mutate(max = max(danceability)) %>%
+  mutate(min = min(danceability)) %>%
+  select(album_name, max, min) %>%
+  unique
+
+dance_dumbbell <- plot_ly(spotify_genius_dance,
+        color = I("gray80"),
+        hoverinfo = 'text') %>%
+  add_segments(
+    x = ~ max,
+    xend = ~ min,
+    y = ~ album_name,
+    yend = ~ album_name,
+    showlegend = FALSE
+  ) %>%
+  add_markers(
+    x = ~ max,
+    y = ~ album_name,
+    name = "Max Danceability Value",
+    color = I('#ff6f59'),
+    text = ~ paste('Max Danceability: ', max)
+  ) %>%
+  add_markers(
+    x = ~ min,
+    y = ~ album_name,
+    name = "Min Danceability Value",
+    color = I("violetred3"),
+    text = ~ paste('Min Danceability: ', min)
+  ) %>%
+  layout(
+    title = "Album Danceability Range",
+    xaxis = list(title = "Danceability"),
+    yaxis = list(title = "")
+  )
